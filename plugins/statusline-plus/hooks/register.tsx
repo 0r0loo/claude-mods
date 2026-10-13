@@ -10,6 +10,7 @@ const runningAgents = atom({ plugin: 'statusline-plus', key: 'runningAgents' } a
 const clockNow = atom({ plugin: 'statusline-plus', key: 'now' } as const, 0)
 const busy = atom({ plugin: 'statusline-plus', key: 'busy' } as const, false)
 const pendingCompact = atom({ plugin: 'statusline-plus', key: 'pendingCompact' } as const, false)
+const expanded = atom({ plugin: 'statusline-plus', key: 'expanded' } as const, false)
 const clearStep = atom({ plugin: 'statusline-plus', key: 'clearStep' } as const, 'idle')
 
 const WARN_AT = [80, 95]
@@ -210,9 +211,9 @@ export const register: Register = on => {
     const isBusy = await read($, busy)
     const isPending = await read($, pendingCompact)
     const clear = await read($, clearStep)
+    const isOpen = await read($, expanded)
     const { Box, Button, Text } = $.ui.resolve(e)
 
-    const isWide = e.props.bodyColumns >= 100
     const barWidth = e.props.bodyColumns >= 70 ? 8 : 5
     const idleMs = turn ? now - turn.endedAt : null
     const isCacheCold = idleMs !== null && idleMs > CACHE_TTL_MS
@@ -223,7 +224,9 @@ export const register: Register = on => {
       const reset = untilReset(resetsAt, now)
       return (
         <Box key={id} flexDirection="row" gap={1} flexShrink={0}>
-          <Text dimColor>{label}</Text>
+          <Box width={3} flexShrink={0}>
+            <Text dimColor>{label}</Text>
+          </Box>
           <Text color={color}>{meter(p, barWidth)}</Text>
           <Text key={`${id}-value`} color={color} bold>{`${p}%`}</Text>
           {reset ? <Text dimColor>{`↻${reset}`}</Text> : null}
@@ -231,26 +234,30 @@ export const register: Register = on => {
       )
     }
 
-    const dot = (id: string) => <Text key={id} dimColor>·</Text>
-    const meta = [
-      s.folder ? <Text key="folder" bold>{s.folder}</Text> : null,
+    const where = [
+      s.folder ? <Text key="folder" bold wrap="truncate-middle">{s.folder}</Text> : null,
       s.branch ? (
-        <Box key="branch" flexDirection="row">
-          <Text color="suggestion">{`⎇ ${s.branch}`}</Text>
+        <Box key="branch" flexDirection="row" flexShrink={1}>
+          <Text color="suggestion" wrap="truncate-middle">{`⎇ ${s.branch}`}</Text>
           {s.isDirty ? <Text color="warning">{' ●'}</Text> : null}
         </Box>
       ) : null,
-      <Text key="cost" color="claude">{`$${(s.costUsd ?? 0).toFixed(2)}`}</Text>,
-      dot('d1'),
-      <Text key="time" dimColor>{`${elapsed(now - s.startedAt)} · ${s.turns}턴`}</Text>,
-      turn ? <Text key="turn" dimColor>{[turn.model, `${turn.seconds}s`].filter(Boolean).join(' ')}</Text> : null,
-      turn?.cacheHitPercent != null ? <Text key="cache" dimColor>{`cache ${turn.cacheHitPercent}%`}</Text> : null,
-      idleMs !== null ? (
-        isCacheCold ? <Text key="idle" color="warning">{`idle ${elapsed(idleMs)} (cache 만료)`}</Text>
-                    : <Text key="idle" dimColor>{`idle ${elapsed(idleMs)}`}</Text>
-      ) : null,
-      compacted > 0 ? <Text key="compacted" dimColor>{`compact ×${compacted}`}</Text> : null,
-      agents > 0 ? <Text key="agents" color="permission">{`agent ${agents}`}</Text> : null,
+    ].filter(Boolean)
+
+    const stat = (key: string, label: string, value: string, color?: string) => (
+      <Box key={key} flexDirection="row" gap={1} flexShrink={0}>
+        <Text dimColor>{label}</Text>
+        <Text color={color}>{value}</Text>
+      </Box>
+    )
+    const stats = [
+      stat('cost', '비용', `$${(s.costUsd ?? 0).toFixed(2)}`, 'claude'),
+      stat('time', '세션', `${elapsed(now - s.startedAt)} · ${s.turns}턴`),
+      turn ? stat('turn', '직전', [turn.model, `${turn.seconds}s`].filter(Boolean).join(' ')) : null,
+      turn?.cacheHitPercent != null ? stat('cache', '캐시', `${turn.cacheHitPercent}%`) : null,
+      idleMs !== null ? stat('idle', '대기', `${elapsed(idleMs)}${isCacheCold ? ' (캐시 만료)' : ''}`, isCacheCold ? 'warning' : undefined) : null,
+      compacted > 0 ? stat('compacted', '컴팩트', `${compacted}회`) : null,
+      agents > 0 ? stat('agents', '에이전트', `${agents}개 실행 중`, 'permission') : null,
     ].filter(Boolean)
 
     const onCompact = async () => {
@@ -288,34 +295,47 @@ export const register: Register = on => {
 
     return (
       <Box flexDirection="column">
-        <Box flexDirection={isWide ? 'row' : 'column'} columnGap={3}>
+        <Box flexDirection="row" flexWrap="wrap" columnGap={3}>
           {Gauge('ctx', 'ctx', s.contextPercent)}
-          {Gauge('5h', '5h ', s.fiveHour?.used ?? null, s.fiveHour?.resetsAt)}
-          {Gauge('1w', '1w ', s.weekly?.used ?? null, s.weekly?.resetsAt)}
+          {Gauge('5h', '5h', s.fiveHour?.used ?? null, s.fiveHour?.resetsAt)}
+          {Gauge('1w', '1w', s.weekly?.used ?? null, s.weekly?.resetsAt)}
         </Box>
-        <Box flexDirection={isWide ? 'row' : 'column'} justifyContent="space-between" columnGap={2}>
-          <Box flexDirection="row" gap={1} flexShrink={1}>
-            {meta}
-          </Box>
-          <Box flexDirection="row" gap={1} flexShrink={0}>
-            <Button
-              key="compact"
-              hotkey="c"
-              label={isBusy ? '컴팩트 중…' : isPending ? '컴팩트 예약됨 · 취소' : '컴팩트'}
-              variant={isPending ? 'primary' : 'secondary'}
-              onPress={onCompact}
-            />
-            <Button
-              key="clear"
-              hotkey="x"
-              label={clear === 'confirm' ? '정말 클리어?' : clear === 'pending' ? '클리어 예약됨 · 취소' : '클리어'}
-              variant={clear === 'idle' ? 'secondary' : 'primary'}
-              onPress={onClear}
-            />
-            {clear === 'confirm' ? (
-              <Button key="clear-cancel" hotkey="n" label="취소" onPress={() => update($, clearStep, () => 'idle')} />
+        {isOpen ? (
+          <Box key="details" flexDirection="column" marginTop={1}>
+            {where.length > 0 ? (
+              <Box flexDirection="row" columnGap={2}>
+                {where}
+              </Box>
             ) : null}
+            <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
+              {stats}
+            </Box>
           </Box>
+        ) : null}
+        <Box flexDirection="row" flexWrap="wrap" gap={1} marginTop={isOpen ? 1 : 0}>
+          <Button
+            key="toggle"
+            hotkey="d"
+            label={isOpen ? '접기 ▴' : '상세 ▾'}
+            onPress={() => update($, expanded, v => !v)}
+          />
+          <Button
+            key="compact"
+            hotkey="c"
+            label={isBusy ? '컴팩트 중…' : isPending ? '컴팩트 예약됨 · 취소' : '컴팩트'}
+            variant={isPending ? 'primary' : 'secondary'}
+            onPress={onCompact}
+          />
+          <Button
+            key="clear"
+            hotkey="x"
+            label={clear === 'confirm' ? '정말 클리어?' : clear === 'pending' ? '클리어 예약됨 · 취소' : '클리어'}
+            variant={clear === 'idle' ? 'secondary' : 'primary'}
+            onPress={onClear}
+          />
+          {clear === 'confirm' ? (
+            <Button key="clear-cancel" hotkey="n" label="취소" onPress={() => update($, clearStep, () => 'idle')} />
+          ) : null}
         </Box>
       </Box>
     )

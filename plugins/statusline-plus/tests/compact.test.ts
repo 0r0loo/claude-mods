@@ -124,3 +124,19 @@ test('클리어 확인 중 취소를 누르면 원래대로 돌아간다', async
   expect(ran).toEqual([])
   await ui.unmount()
 })
+
+test('상세는 접혀 있다가 누르면 펼쳐진다', async ($, on) => {
+  engine(on)
+  await $.turn.complete({ ...TURN })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'statusline-plus', surface, component: 'AbovePrompt', props: props(false) })
+    const text = async () => (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
+    expect(await text()).not.toContain('비용')
+    await ui.press({ key: 'toggle' })
+    expect(await text()).toContain('비용')
+    expect(await text()).toContain('proj')
+    await ui.press({ key: 'toggle' })
+    expect(await text()).not.toContain('비용')
+    await ui.unmount()
+  }
+})

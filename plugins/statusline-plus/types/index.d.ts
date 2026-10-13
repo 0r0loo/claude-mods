@@ -32,6 +32,7 @@ declare module 'claude-code' {
       busy: boolean
       pendingCompact: boolean
       clearStep: ClearStep
+      expanded: boolean
     }
   }
 }
