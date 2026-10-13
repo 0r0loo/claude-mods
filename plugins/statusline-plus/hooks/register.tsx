@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, TurnUsage } from 'claude-code'
 
-import type { LastTurn, Snapshot, Window } from '../types'
+import type { ClearStep, LastTurn, Snapshot, Window } from '../types'
 
 const snapshot = atom({ plugin: 'statusline-plus', key: 'snapshot' } as const, null)
 const lastTurn = atom({ plugin: 'statusline-plus', key: 'lastTurn' } as const, null)
@@ -10,6 +10,7 @@ const runningAgents = atom({ plugin: 'statusline-plus', key: 'runningAgents' } a
 const clockNow = atom({ plugin: 'statusline-plus', key: 'now' } as const, 0)
 const busy = atom({ plugin: 'statusline-plus', key: 'busy' } as const, false)
 const pendingCompact = atom({ plugin: 'statusline-plus', key: 'pendingCompact' } as const, false)
+const clearStep = atom({ plugin: 'statusline-plus', key: 'clearStep' } as const, 'idle')
 
 const WARN_AT = [80, 95]
 const CACHE_TTL_MS = 5 * 60 * 1000
@@ -32,20 +33,27 @@ export function meter(percent: number, width = 10): string {
   return '█'.repeat(filled) + '░'.repeat(width - filled)
 }
 
-export function untilReset(resetsAt: string | undefined, now: number): string {
-  if (!resetsAt) return ''
-  const minutes = Math.max(0, Math.round((Date.parse(resetsAt) - now) / 60000))
+export function duration(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60000)
   const days = Math.floor(minutes / 1440)
   const hours = Math.floor((minutes % 1440) / 60)
   const mins = minutes % 60
-  if (days > 0) return `${days}일 ${hours}시간`
-  if (hours > 0) return `${hours}시간 ${mins}분`
-  return `${mins}분`
+  if (days > 0) return hours > 0 ? `${days}d${hours}h` : `${days}d`
+  if (hours > 0) return mins > 0 ? `${hours}h${mins}m` : `${hours}h`
+  return `${mins}m`
+}
+
+export function untilReset(resetsAt: string | undefined, now: number): string {
+  if (!resetsAt) return ''
+  return duration(Date.parse(resetsAt) - now + 30_000)
 }
 
 export function elapsed(ms: number): string {
-  const minutes = Math.floor(Math.max(0, ms) / 60000)
-  return minutes >= 60 ? `${Math.floor(minutes / 60)}시간 ${minutes % 60}분` : `${minutes}분`
+  return duration(ms)
+}
+
+export function levelColor(percent: number): 'success' | 'warning' | 'error' {
+  return percent >= 80 ? 'error' : percent >= 60 ? 'warning' : 'success'
 }
 
 export function cacheHitPercent(usage: TurnUsage | undefined): number | null {
@@ -125,6 +133,18 @@ async function compactNow($: EngineInterface, fallback: 'retry' | 'fill') {
   }
 }
 
+async function clearNow($: EngineInterface) {
+  await update($, clearStep, () => 'idle')
+  await update($, pendingCompact, () => false)
+  try {
+    await $.command.run({ command: 'clear' })
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    void $.prompt.fill({ text: '/clear' })
+    $.ui.toast(`클리어하지 못했어요 (${reason}). 입력창에 /clear를 넣었으니 Enter로 실행하세요`)
+  }
+}
+
 async function countAgents($: EngineInterface) {
   const agents = await $.agent.list()
   const running = agents.filter(a => a.status === 'running' || a.status === 'pending').length
@@ -153,7 +173,10 @@ export const register: Register = on => {
       }
       await update($, lastTurn, () => turn)
       await refresh($)
-      if (await read($, pendingCompact)) {
+      // 클리어가 예약돼 있으면 컴팩트는 의미가 없으니 클리어만 한다
+      if ((await read($, clearStep)) === 'pending') {
+        void clearNow($)
+      } else if (await read($, pendingCompact)) {
         await update($, pendingCompact, () => false)
         await compactNow($, 'fill')
       }
@@ -186,64 +209,113 @@ export const register: Register = on => {
     const agents = await read($, runningAgents)
     const isBusy = await read($, busy)
     const isPending = await read($, pendingCompact)
+    const clear = await read($, clearStep)
     const { Box, Button, Text } = $.ui.resolve(e)
 
-    const limit = (label: string, w: Window | null) =>
-      `${label} ${meter(w?.used ?? 0, 8)} ${Math.round(w?.used ?? 0)}%${w?.resetsAt ? ` (${untilReset(w.resetsAt, now)} 뒤 리셋)` : ''}`
-
-    const ctx = s.contextPercent
+    const isWide = e.props.bodyColumns >= 100
+    const barWidth = e.props.bodyColumns >= 70 ? 8 : 5
     const idleMs = turn ? now - turn.endedAt : null
-    const line1 = [
-      s.folder ? `📁 ${s.folder}` : null,
-      s.branch ? `⎇ ${s.branch}${s.isDirty ? ' ●' : ''}` : null,
-      `⏱ ${elapsed(now - s.startedAt)}`,
-      `💬 ${s.turns}회`,
-      `$${(s.costUsd ?? 0).toFixed(2)}`,
-    ].filter(Boolean).join('  ·  ')
-    const line2 = [
-      `컨텍스트 ${meter(ctx ?? 0, 8)} ${ctx ?? 0}%`,
-      limit('5시간', s.fiveHour),
-      limit('주간', s.weekly),
-    ].join('  ·  ')
-    const line3 = [
-      turn ? `직전 턴 ${turn.model ?? ''} ${turn.seconds}초`.replace('  ', ' ') : null,
-      turn?.cacheHitPercent != null ? `캐시 ${turn.cacheHitPercent}%` : null,
-      `대기 ${elapsed(idleMs ?? 0)}${idleMs !== null && idleMs > CACHE_TTL_MS ? ' (캐시 만료)' : ''}`,
-      compacted > 0 ? `컴팩트 ${compacted}회` : null,
-      agents > 0 ? `에이전트 ${agents}개 실행 중` : null,
-    ].filter(Boolean).join('  ·  ')
+    const isCacheCold = idleMs !== null && idleMs > CACHE_TTL_MS
+
+    const Gauge = (id: string, label: string, percent: number | null, resetsAt?: string) => {
+      const p = Math.round(percent ?? 0)
+      const color = percent === null ? 'subtle' : levelColor(p)
+      const reset = untilReset(resetsAt, now)
+      return (
+        <Box key={id} flexDirection="row" gap={1} flexShrink={0}>
+          <Text dimColor>{label}</Text>
+          <Text color={color}>{meter(p, barWidth)}</Text>
+          <Text key={`${id}-value`} color={color} bold>{`${p}%`}</Text>
+          {reset ? <Text dimColor>{`↻${reset}`}</Text> : null}
+        </Box>
+      )
+    }
+
+    const dot = (id: string) => <Text key={id} dimColor>·</Text>
+    const meta = [
+      s.folder ? <Text key="folder" bold>{s.folder}</Text> : null,
+      s.branch ? (
+        <Box key="branch" flexDirection="row">
+          <Text color="suggestion">{`⎇ ${s.branch}`}</Text>
+          {s.isDirty ? <Text color="warning">{' ●'}</Text> : null}
+        </Box>
+      ) : null,
+      <Text key="cost" color="claude">{`$${(s.costUsd ?? 0).toFixed(2)}`}</Text>,
+      dot('d1'),
+      <Text key="time" dimColor>{`${elapsed(now - s.startedAt)} · ${s.turns}턴`}</Text>,
+      turn ? <Text key="turn" dimColor>{[turn.model, `${turn.seconds}s`].filter(Boolean).join(' ')}</Text> : null,
+      turn?.cacheHitPercent != null ? <Text key="cache" dimColor>{`cache ${turn.cacheHitPercent}%`}</Text> : null,
+      idleMs !== null ? (
+        isCacheCold ? <Text key="idle" color="warning">{`idle ${elapsed(idleMs)} (cache 만료)`}</Text>
+                    : <Text key="idle" dimColor>{`idle ${elapsed(idleMs)}`}</Text>
+      ) : null,
+      compacted > 0 ? <Text key="compacted" dimColor>{`compact ×${compacted}`}</Text> : null,
+      agents > 0 ? <Text key="agents" color="permission">{`agent ${agents}`}</Text> : null,
+    ].filter(Boolean)
+
+    const onCompact = async () => {
+      if (await read($, pendingCompact)) {
+        await update($, pendingCompact, () => false)
+        $.ui.toast('컴팩트 예약을 취소했어요')
+        return
+      }
+      if (e.props.isWorking) {
+        await update($, pendingCompact, () => true)
+        $.ui.toast('응답이 끝나면 컴팩트할게요')
+        return
+      }
+      await compactNow($, 'retry')
+    }
+
+    const onClear = async () => {
+      const step = await read($, clearStep)
+      if (step === 'pending') {
+        await update($, clearStep, () => 'idle')
+        $.ui.toast('클리어 예약을 취소했어요')
+        return
+      }
+      if (step === 'idle') {
+        await update($, clearStep, () => 'confirm')
+        return
+      }
+      if (e.props.isWorking) {
+        await update($, clearStep, () => 'pending')
+        $.ui.toast('응답이 끝나면 클리어할게요')
+        return
+      }
+      await clearNow($)
+    }
 
     return (
       <Box flexDirection="column">
-        <Text dimColor>{line1}</Text>
-        <Text color={ctx !== null && ctx >= 80 ? 'warning' : undefined}>{line2}</Text>
-        <Box>
-          {line3 ? <Text dimColor>{line3} </Text> : null}
-          <Button
-            key="compact"
-            label={isBusy ? '컴팩트 중…' : isPending ? '컴팩트 예약됨 (눌러서 취소)' : '컴팩트'}
-            onPress={async () => {
-              if (await read($, pendingCompact)) {
-                await update($, pendingCompact, () => false)
-                $.ui.toast('컴팩트 예약을 취소했어요')
-                return
-              }
-              if (e.props.isWorking) {
-                await update($, pendingCompact, () => true)
-                $.ui.toast('응답이 끝나면 컴팩트할게요')
-                return
-              }
-              await compactNow($, 'retry')
-            }}
-          />
-          <Button
-            key="clear"
-            label="클리어"
-            onPress={() => {
-              void $.prompt.fill({ text: '/clear' })
-              $.ui.toast('입력창에 /clear를 넣었어요. Enter로 확정하세요')
-            }}
-          />
+        <Box flexDirection={isWide ? 'row' : 'column'} columnGap={3}>
+          {Gauge('ctx', 'ctx', s.contextPercent)}
+          {Gauge('5h', '5h ', s.fiveHour?.used ?? null, s.fiveHour?.resetsAt)}
+          {Gauge('1w', '1w ', s.weekly?.used ?? null, s.weekly?.resetsAt)}
+        </Box>
+        <Box flexDirection={isWide ? 'row' : 'column'} justifyContent="space-between" columnGap={2}>
+          <Box flexDirection="row" gap={1} flexShrink={1}>
+            {meta}
+          </Box>
+          <Box flexDirection="row" gap={1} flexShrink={0}>
+            <Button
+              key="compact"
+              hotkey="c"
+              label={isBusy ? '컴팩트 중…' : isPending ? '컴팩트 예약됨 · 취소' : '컴팩트'}
+              variant={isPending ? 'primary' : 'secondary'}
+              onPress={onCompact}
+            />
+            <Button
+              key="clear"
+              hotkey="x"
+              label={clear === 'confirm' ? '정말 클리어?' : clear === 'pending' ? '클리어 예약됨 · 취소' : '클리어'}
+              variant={clear === 'idle' ? 'secondary' : 'primary'}
+              onPress={onClear}
+            />
+            {clear === 'confirm' ? (
+              <Button key="clear-cancel" hotkey="n" label="취소" onPress={() => update($, clearStep, () => 'idle')} />
+            ) : null}
+          </Box>
         </Box>
       </Box>
     )

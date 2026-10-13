@@ -12,6 +12,8 @@ export type Snapshot = {
   weekly: Window | null
 }
 
+export type ClearStep = 'idle' | 'confirm' | 'pending'
+
 export type LastTurn = {
   model: string | null
   seconds: number
@@ -29,6 +31,7 @@ declare module 'claude-code' {
       now: number
       busy: boolean
       pendingCompact: boolean
+      clearStep: ClearStep
     }
   }
 }

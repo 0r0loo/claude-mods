@@ -8,12 +8,14 @@ test('meter fills in proportion to the percent', () => {
   expect(meter(120, 4)).toBe('████')
 })
 
-test('untilReset and elapsed read in Korean units', () => {
+test('untilReset and elapsed read as short units', () => {
   const now = Date.parse('2026-10-12T00:00:00Z')
-  expect(untilReset('2026-10-12T02:30:00Z', now)).toBe('2시간 30분')
-  expect(untilReset('2026-10-15T04:00:00Z', now)).toBe('3일 4시간')
+  expect(untilReset('2026-10-12T02:30:00Z', now)).toBe('2h30m')
+  expect(untilReset('2026-10-15T04:00:00Z', now)).toBe('3d4h')
+  expect(untilReset('2026-10-12T03:00:00Z', now)).toBe('3h')
   expect(untilReset(undefined, now)).toBe('')
-  expect(elapsed(75 * 60000)).toBe('1시간 15분')
+  expect(elapsed(75 * 60000)).toBe('1h15m')
+  expect(elapsed(5 * 60000)).toBe('5m')
 })
 
 import { cacheHitPercent, shortModel } from '../hooks/register'

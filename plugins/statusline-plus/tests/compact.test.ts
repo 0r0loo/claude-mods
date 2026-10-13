@@ -11,7 +11,7 @@ const engine = (on: On) => {
     toasts.push(e.text)
     return { value: undefined } as never
   })
-  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000, percent: 10 }, rateLimits: [] } }) as never)
+  on('session.usage', () => ({ value: { startedAt: Date.now(), context: { window: 200000, percent: 10 }, rateLimits: [] } }) as never)
   on('session.root', () => ({ value: '/tmp/proj' }) as never)
   on('session.turns', () => ({ value: 3 }) as never)
   on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as never)
@@ -61,5 +61,66 @@ test('응답이 없을 때는 바로 컴팩트한다', async ($, on) => {
   const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
   await ui.press({ key: 'compact' })
   expect(calls.n).toBe(1)
+  await ui.unmount()
+})
+
+const recordClears = (on: On) => {
+  const ran: string[] = []
+  on('command.run', (_$, e) => {
+    ran.push(e.command)
+    return { text: '' }
+  })
+  return ran
+}
+
+test('ctx·5h·1w 라벨과 퍼센트를 띄운다', async ($, on) => {
+  engine(on)
+  await $.turn.complete({ ...TURN })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'statusline-plus', surface, component: 'AbovePrompt', props: props(false) })
+    const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
+    expect(texts).toContain('ctx')
+    expect(texts).toContain('5h')
+    expect(texts).toContain('1w')
+    expect(texts).toContain('10%')
+    await ui.unmount()
+  }
+})
+
+test('클리어는 두 번 눌러야 실행된다', async ($, on) => {
+  engine(on)
+  const ran = recordClears(on)
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  await ui.press({ key: 'clear' })
+  expect(ran).toEqual([])
+  expect((await ui.find({ key: 'clear' }))?.text ?? '').toContain('정말')
+  await ui.press({ key: 'clear' })
+  expect(ran).toEqual(['clear'])
+  await ui.unmount()
+})
+
+test('응답 중 클리어는 예약했다가 턴이 끝나면 실행하고, 예약된 컴팩트는 버린다', async ($, on) => {
+  const calls = countCompacts(on)
+  const ran = recordClears(on)
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(true) })
+  await ui.press({ key: 'compact' })
+  await ui.press({ key: 'clear' })
+  await ui.press({ key: 'clear' })
+  expect(ran).toEqual([])
+  expect((await ui.find({ key: 'clear' }))?.text ?? '').toContain('예약됨')
+  await $.turn.complete({ ...TURN })
+  expect(ran).toEqual(['clear'])
+  expect(calls.n).toBe(0)
+  await ui.unmount()
+})
+
+test('클리어 확인 중 취소를 누르면 원래대로 돌아간다', async ($, on) => {
+  engine(on)
+  const ran = recordClears(on)
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  await ui.press({ key: 'clear' })
+  await ui.press({ key: 'clear-cancel' })
+  expect((await ui.find({ key: 'clear' }))?.text ?? '').not.toContain('정말')
+  expect(ran).toEqual([])
   await ui.unmount()
 })
