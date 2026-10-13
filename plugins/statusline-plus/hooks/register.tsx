@@ -14,6 +14,18 @@ const WARN_AT = [80, 95]
 const CACHE_TTL_MS = 5 * 60 * 1000
 const warned = new Set<string>()
 
+const EMPTY: Snapshot = {
+  folder: '',
+  branch: null,
+  isDirty: false,
+  startedAt: Date.now(),
+  turns: 0,
+  costUsd: 0,
+  contextPercent: 0,
+  fiveHour: null,
+  weekly: null,
+}
+
 export function meter(percent: number, width = 10): string {
   const filled = Math.max(0, Math.min(width, Math.round((percent / 100) * width)))
   return '█'.repeat(filled) + '░'.repeat(width - filled)
@@ -138,8 +150,8 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    const s = await read($, snapshot)
-    if (e.props.hasSurvey || s === null) return next(e)
+    if (e.props.hasSurvey) return next(e)
+    const s = (await read($, snapshot)) ?? EMPTY
 
     const now = (await read($, clockNow)) || Date.now()
     const turn = await read($, lastTurn)
@@ -149,26 +161,26 @@ export const register: Register = on => {
     const { Box, Button, Text } = $.ui.resolve(e)
 
     const limit = (label: string, w: Window | null) =>
-      w ? `${label} ${meter(w.used, 8)} ${Math.round(w.used)}%${w.resetsAt ? ` (${untilReset(w.resetsAt, now)} 뒤 리셋)` : ''}` : `${label} —`
+      `${label} ${meter(w?.used ?? 0, 8)} ${Math.round(w?.used ?? 0)}%${w?.resetsAt ? ` (${untilReset(w.resetsAt, now)} 뒤 리셋)` : ''}`
 
     const ctx = s.contextPercent
     const idleMs = turn ? now - turn.endedAt : null
     const line1 = [
-      `📁 ${s.folder}`,
+      s.folder ? `📁 ${s.folder}` : null,
       s.branch ? `⎇ ${s.branch}${s.isDirty ? ' ●' : ''}` : null,
       `⏱ ${elapsed(now - s.startedAt)}`,
       `💬 ${s.turns}회`,
-      s.costUsd !== null ? `$${s.costUsd.toFixed(2)}` : null,
+      `$${(s.costUsd ?? 0).toFixed(2)}`,
     ].filter(Boolean).join('  ·  ')
     const line2 = [
-      ctx !== null ? `컨텍스트 ${meter(ctx, 8)} ${ctx}%` : '컨텍스트 —',
+      `컨텍스트 ${meter(ctx ?? 0, 8)} ${ctx ?? 0}%`,
       limit('5시간', s.fiveHour),
       limit('주간', s.weekly),
     ].join('  ·  ')
     const line3 = [
       turn ? `직전 턴 ${turn.model ?? ''} ${turn.seconds}초`.replace('  ', ' ') : null,
       turn?.cacheHitPercent != null ? `캐시 ${turn.cacheHitPercent}%` : null,
-      idleMs !== null ? `대기 ${elapsed(idleMs)}${idleMs > CACHE_TTL_MS ? ' (캐시 만료)' : ''}` : null,
+      `대기 ${elapsed(idleMs ?? 0)}${idleMs !== null && idleMs > CACHE_TTL_MS ? ' (캐시 만료)' : ''}`,
       compacted > 0 ? `컴팩트 ${compacted}회` : null,
       agents > 0 ? `에이전트 ${agents}개 실행 중` : null,
     ].filter(Boolean).join('  ·  ')
