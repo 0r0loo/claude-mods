@@ -28,6 +28,7 @@ declare module 'claude-code' {
       runningAgents: number
       now: number
       busy: boolean
+      pendingCompact: boolean
     }
   }
 }

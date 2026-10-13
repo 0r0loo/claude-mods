@@ -9,6 +9,7 @@ const compactions = atom({ plugin: 'statusline-plus', key: 'compactions' } as co
 const runningAgents = atom({ plugin: 'statusline-plus', key: 'runningAgents' } as const, 0)
 const clockNow = atom({ plugin: 'statusline-plus', key: 'now' } as const, 0)
 const busy = atom({ plugin: 'statusline-plus', key: 'busy' } as const, false)
+const pendingCompact = atom({ plugin: 'statusline-plus', key: 'pendingCompact' } as const, false)
 
 const WARN_AT = [80, 95]
 const CACHE_TTL_MS = 5 * 60 * 1000
@@ -102,6 +103,28 @@ async function refresh($: EngineInterface) {
   }
 }
 
+async function compactNow($: EngineInterface, fallback: 'retry' | 'fill') {
+  if (await read($, busy)) return
+  await update($, busy, () => true)
+  try {
+    const r = await $.session.compact()
+    if (r && 'skip' in r && r.skip) $.ui.toast('컴팩트가 취소됐어요')
+  } catch (err) {
+    if (fallback === 'retry') {
+      // 턴이 도는 중이라 거절됐다: 예약해 두고 turn.complete 에서 다시 부른다
+      await update($, pendingCompact, () => true)
+      $.ui.toast('응답이 끝나면 컴팩트할게요')
+    } else {
+      const reason = err instanceof Error ? err.message : String(err)
+      void $.prompt.fill({ text: '/compact' })
+      $.ui.toast(`예약한 컴팩트를 하지 못했어요 (${reason}). 입력창에 /compact를 넣었으니 Enter로 실행하세요`)
+    }
+  } finally {
+    await update($, busy, () => false)
+    await refresh($)
+  }
+}
+
 async function countAgents($: EngineInterface) {
   const agents = await $.agent.list()
   const running = agents.filter(a => a.status === 'running' || a.status === 'pending').length
@@ -130,6 +153,10 @@ export const register: Register = on => {
       }
       await update($, lastTurn, () => turn)
       await refresh($)
+      if (await read($, pendingCompact)) {
+        await update($, pendingCompact, () => false)
+        await compactNow($, 'fill')
+      }
     }
     await countAgents($)
     return result
@@ -158,6 +185,7 @@ export const register: Register = on => {
     const compacted = await read($, compactions)
     const agents = await read($, runningAgents)
     const isBusy = await read($, busy)
+    const isPending = await read($, pendingCompact)
     const { Box, Button, Text } = $.ui.resolve(e)
 
     const limit = (label: string, w: Window | null) =>
@@ -193,21 +221,19 @@ export const register: Register = on => {
           {line3 ? <Text dimColor>{line3} </Text> : null}
           <Button
             key="compact"
-            label={isBusy ? '컴팩트 중…' : '컴팩트'}
+            label={isBusy ? '컴팩트 중…' : isPending ? '컴팩트 예약됨 (눌러서 취소)' : '컴팩트'}
             onPress={async () => {
-              if (await read($, busy)) return
-              await update($, busy, () => true)
-              try {
-                const r = await $.session.compact()
-                if (r && 'skip' in r && r.skip) $.ui.toast('컴팩트가 취소됐어요')
-              } catch (err) {
-                const reason = err instanceof Error ? err.message : String(err)
-                void $.prompt.fill({ text: '/compact' })
-                $.ui.toast(`버튼으로는 컴팩트하지 못했어요 (${reason}). 입력창에 /compact를 넣었으니 Enter로 실행하세요`)
-              } finally {
-                await update($, busy, () => false)
-                await refresh($)
+              if (await read($, pendingCompact)) {
+                await update($, pendingCompact, () => false)
+                $.ui.toast('컴팩트 예약을 취소했어요')
+                return
               }
+              if (e.props.isWorking) {
+                await update($, pendingCompact, () => true)
+                $.ui.toast('응답이 끝나면 컴팩트할게요')
+                return
+              }
+              await compactNow($, 'retry')
             }}
           />
           <Button
