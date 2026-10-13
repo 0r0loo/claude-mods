@@ -112,16 +112,17 @@ async function refresh($: EngineInterface) {
   }
 }
 
+// 지금 /compact 를 친 것처럼 실행한다. command.run 은 세션이 한가해질 때까지 기다렸다 실행하므로
+// 응답 중 여부를 따로 판단하지 않는다. 실패하면 실제 이유를 보여주고 입력창에 넣어 둔다.
 async function compactNow($: EngineInterface) {
   if (await read($, busy)) return
   await update($, busy, () => true)
   try {
-    const r = await $.session.compact()
-    if (r && 'skip' in r && r.skip) $.ui.toast('컴팩트가 취소됐어요')
-  } catch {
-    // 누르는 사이에 턴이 시작돼 거절됐다: 예약해 두고 턴이 끝나면 실행한다
-    await update($, pendingCompact, () => true)
-    $.ui.toast('응답이 끝나면 컴팩트할게요')
+    await $.command.run({ command: 'compact' })
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    $.prompt.fill({ text: '/compact' }).catch(() => {})
+    $.ui.toast(`컴팩트하지 못했어요 (${reason}). 입력창에 /compact를 넣었으니 Enter로 실행하세요`)
   } finally {
     await update($, busy, () => false)
     await refresh($)

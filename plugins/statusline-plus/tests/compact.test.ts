@@ -92,11 +92,13 @@ test('예약을 한 번 더 누르면 취소된다', async ($, on) => {
   await ui.unmount()
 })
 
-test('응답이 없을 때는 바로 컴팩트한다', async ($, on) => {
-  const calls = countCompacts(on)
+test('응답이 없을 때는 바로 /compact 를 실행하고 예약으로 남기지 않는다', async ($, on) => {
+  countCompacts(on)
+  const ran = recordClears(on)
   const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
   await ui.press({ key: 'compact' })
-  expect(calls.n).toBe(1)
+  expect(ran).toEqual(['compact'])
+  expect((await ui.find({ key: 'compact' }))?.text ?? '').not.toContain('예약됨')
   await ui.unmount()
 })
 
