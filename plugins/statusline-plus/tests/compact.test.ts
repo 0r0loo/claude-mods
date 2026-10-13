@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 import type { On, RenderPropsOf } from 'claude-code'
 
 const props = (isWorking: boolean) =>
@@ -29,30 +29,66 @@ const countCompacts = (on: On) => {
   return calls
 }
 
+const recordClears = (on: On) => {
+  const ran: string[] = []
+  on('command.run', (_$, e) => {
+    ran.push(e.command)
+    return { text: '' }
+  })
+  return ran
+}
+
 const TURN = { turnId: 't1', answer: 'done', durationMs: 1000, isAborted: false, reason: 'answer' } as const
 
-test('응답 중에 누르면 예약했다가 턴이 끝나면 컴팩트한다', async ($, on) => {
-  const calls = countCompacts(on)
+test('응답 중에 누르면 예약했다가 턴이 끝난 뒤 /compact 를 실행한다', async ($, on) => {
+  countCompacts(on)
+  const ran = recordClears(on)
+  const clock = mock.clock(on)
   for (const surface of ['terminal', 'desktop'] as const) {
-    calls.n = 0
+    ran.length = 0
     const ui = await $.ui.mount({ plugin: 'statusline-plus', surface, component: 'AbovePrompt', props: props(true) })
     await ui.press({ key: 'compact' })
-    expect(calls.n).toBe(0)
     expect((await ui.find({ key: 'compact' }))?.text ?? '').toContain('예약됨')
 
     await $.turn.complete({ ...TURN })
-    expect(calls.n).toBe(1)
+    expect(ran).toEqual([])
+    await clock.advance(10)
+    expect(ran).toEqual(['compact'])
+    expect((await ui.find({ key: 'compact' }))?.text ?? '').not.toContain('예약됨')
     await ui.unmount()
   }
 })
 
+test('예약한 명령이 거절되면 입력창에 넣고 알린다', async ($, on) => {
+  const toasts = engine(on)
+  const filled: string[] = []
+  on('command.run', () => {
+    throw new Error('nope')
+  })
+  on('prompt.fill', (_$, e) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
+  const clock = mock.clock(on)
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(true) })
+  await ui.press({ key: 'compact' })
+  await $.turn.complete({ ...TURN })
+  await clock.advance(10)
+  expect(filled).toEqual(['/compact'])
+  expect(toasts.join(' ')).toContain('Enter')
+  await ui.unmount()
+})
+
 test('예약을 한 번 더 누르면 취소된다', async ($, on) => {
-  const calls = countCompacts(on)
+  countCompacts(on)
+  const ran = recordClears(on)
+  const clock = mock.clock(on)
   const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(true) })
   await ui.press({ key: 'compact' })
   await ui.press({ key: 'compact' })
   await $.turn.complete({ ...TURN })
-  expect(calls.n).toBe(0)
+  await clock.advance(10)
+  expect(ran).toEqual([])
   await ui.unmount()
 })
 
@@ -63,15 +99,6 @@ test('응답이 없을 때는 바로 컴팩트한다', async ($, on) => {
   expect(calls.n).toBe(1)
   await ui.unmount()
 })
-
-const recordClears = (on: On) => {
-  const ran: string[] = []
-  on('command.run', (_$, e) => {
-    ran.push(e.command)
-    return { text: '' }
-  })
-  return ran
-}
 
 test('ctx·5h·1w 라벨과 퍼센트를 띄운다', async ($, on) => {
   engine(on)
@@ -100,8 +127,9 @@ test('클리어는 두 번 눌러야 실행된다', async ($, on) => {
 })
 
 test('응답 중 클리어는 예약했다가 턴이 끝나면 실행하고, 예약된 컴팩트는 버린다', async ($, on) => {
-  const calls = countCompacts(on)
+  countCompacts(on)
   const ran = recordClears(on)
+  const clock = mock.clock(on)
   const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(true) })
   await ui.press({ key: 'compact' })
   await ui.press({ key: 'clear' })
@@ -109,8 +137,8 @@ test('응답 중 클리어는 예약했다가 턴이 끝나면 실행하고, 예
   expect(ran).toEqual([])
   expect((await ui.find({ key: 'clear' }))?.text ?? '').toContain('예약됨')
   await $.turn.complete({ ...TURN })
+  await clock.advance(10)
   expect(ran).toEqual(['clear'])
-  expect(calls.n).toBe(0)
   await ui.unmount()
 })
 

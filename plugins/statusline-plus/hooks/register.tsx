@@ -112,26 +112,34 @@ async function refresh($: EngineInterface) {
   }
 }
 
-async function compactNow($: EngineInterface, fallback: 'retry' | 'fill') {
+async function compactNow($: EngineInterface) {
   if (await read($, busy)) return
   await update($, busy, () => true)
   try {
     const r = await $.session.compact()
     if (r && 'skip' in r && r.skip) $.ui.toast('컴팩트가 취소됐어요')
-  } catch (err) {
-    if (fallback === 'retry') {
-      // 턴이 도는 중이라 거절됐다: 예약해 두고 turn.complete 에서 다시 부른다
-      await update($, pendingCompact, () => true)
-      $.ui.toast('응답이 끝나면 컴팩트할게요')
-    } else {
-      const reason = err instanceof Error ? err.message : String(err)
-      void $.prompt.fill({ text: '/compact' })
-      $.ui.toast(`예약한 컴팩트를 하지 못했어요 (${reason}). 입력창에 /compact를 넣었으니 Enter로 실행하세요`)
-    }
+  } catch {
+    // 누르는 사이에 턴이 시작돼 거절됐다: 예약해 두고 턴이 끝나면 실행한다
+    await update($, pendingCompact, () => true)
+    $.ui.toast('응답이 끝나면 컴팩트할게요')
   } finally {
     await update($, busy, () => false)
     await refresh($)
   }
+}
+
+// 예약된 /compact·/clear 를 실행한다. turn.complete 훅 안에서는 턴이 그 훅을 기다리고 있어
+// 컴팩트도 명령도 거절되므로, 시계로 훅 밖으로 빼낸 뒤 command.run 에 맡긴다(세션이 한가해지면 실행된다).
+function runAfterTurn($: EngineInterface, command: 'compact' | 'clear') {
+  $.clock.after(1, async () => {
+    try {
+      await $.command.run({ command })
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      $.prompt.fill({ text: `/${command}` }).catch(() => {})
+      $.ui.toast(`예약한 /${command}를 실행하지 못했어요 (${reason}). 입력창에 넣었으니 Enter로 실행하세요`)
+    }
+  })
 }
 
 async function clearNow($: EngineInterface) {
@@ -141,7 +149,7 @@ async function clearNow($: EngineInterface) {
     await $.command.run({ command: 'clear' })
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    void $.prompt.fill({ text: '/clear' })
+    $.prompt.fill({ text: '/clear' }).catch(() => {})
     $.ui.toast(`클리어하지 못했어요 (${reason}). 입력창에 /clear를 넣었으니 Enter로 실행하세요`)
   }
 }
@@ -176,10 +184,12 @@ export const register: Register = on => {
       await refresh($)
       // 클리어가 예약돼 있으면 컴팩트는 의미가 없으니 클리어만 한다
       if ((await read($, clearStep)) === 'pending') {
-        void clearNow($)
+        await update($, clearStep, () => 'idle')
+        await update($, pendingCompact, () => false)
+        runAfterTurn($, 'clear')
       } else if (await read($, pendingCompact)) {
         await update($, pendingCompact, () => false)
-        await compactNow($, 'fill')
+        runAfterTurn($, 'compact')
       }
     }
     await countAgents($)
@@ -271,7 +281,7 @@ export const register: Register = on => {
         $.ui.toast('응답이 끝나면 컴팩트할게요')
         return
       }
-      await compactNow($, 'retry')
+      await compactNow($)
     }
 
     const onClear = async () => {
