@@ -188,8 +188,10 @@ export const register: Register = on => {
               try {
                 const r = await $.session.compact()
                 if (r && 'skip' in r && r.skip) $.ui.toast('컴팩트가 취소됐어요')
-              } catch {
-                $.ui.toast('응답 중에는 컴팩트할 수 없어요. 턴이 끝난 뒤 다시 눌러 주세요')
+              } catch (err) {
+                const reason = err instanceof Error ? err.message : String(err)
+                void $.prompt.fill({ text: '/compact' })
+                $.ui.toast(`버튼으로는 컴팩트하지 못했어요 (${reason}). 입력창에 /compact를 넣었으니 Enter로 실행하세요`)
               } finally {
                 await update($, busy, () => false)
                 await refresh($)
