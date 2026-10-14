@@ -120,7 +120,8 @@ export async function runCompact($: EngineInterface) {
   } catch (err) {
     if (!(err instanceof Error && err.message.includes('not available in a headless'))) throw err
     const { drop } = await $.prompt.submit({ text: '/compact', asUser: true })
-    if (drop) throw new Error(drop)
+    // drop 이 있으면 사유가 빈 문자열이어도 거절이다
+    if (drop !== undefined) throw new Error(drop || '/compact 제출이 거절됐어요')
   }
 }
 

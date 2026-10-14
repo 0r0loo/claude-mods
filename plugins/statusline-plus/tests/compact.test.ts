@@ -84,17 +84,18 @@ test('예약한 명령이 거절되면 입력창에 넣고 알린다', async ($,
 const HEADLESS = '$.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on'
 
 // 테스트 엔진은 hook 이 던진 오류를 건너뛰고 'no implementation' 으로만 거절하므로, headless 거절은 가짜 $ 로 흉내 낸다
-const headless = () => {
+// clock.after 는 콜백을 바로 돌리지 않고 모아 두었다가 runTimers 로 실행한다
+const headless = ({ error = HEADLESS, submitResult = {} as { drop?: string } } = {}) => {
   const submitted: { text: string; asUser?: boolean }[] = []
   const filled: string[] = []
   const toasts: string[] = []
-  const timers: Promise<unknown>[] = []
+  const timers: (() => Promise<unknown>)[] = []
   const $ = {
-    command: { run: async () => { throw new Error(HEADLESS) } },
+    command: { run: async () => { throw new Error(error) } },
     prompt: {
       submit: async (args: { text: string; asUser?: boolean }) => {
         submitted.push(args)
-        return { text: args.text }
+        return 'drop' in submitResult ? submitResult : { text: args.text }
       },
       fill: async (args: { text: string }) => {
         filled.push(args.text)
@@ -102,10 +103,13 @@ const headless = () => {
       },
     },
     ui: { toast: (text: string) => toasts.push(text) },
-    clock: { after: (_ms: number, fn: () => Promise<unknown>) => timers.push(fn()) },
+    clock: { after: (_ms: number, fn: () => Promise<unknown>) => timers.push(fn) },
   } as unknown as EngineInterface
-  return { $, submitted, filled, toasts, timers }
+  const runTimers = () => Promise.all(timers.splice(0).map(fn => fn()))
+  return { $, submitted, filled, toasts, timers, runTimers }
 }
+
+const rejection = (p: Promise<unknown>) => p.then(() => undefined, (err: Error) => err.message)
 
 test('한가할 때 headless 라 거절되면 /compact 를 턴으로 제출한다', async () => {
   const { $, submitted } = headless()
@@ -113,13 +117,34 @@ test('한가할 때 headless 라 거절되면 /compact 를 턴으로 제출한�
   expect(submitted).toEqual([{ text: '/compact', asUser: true }])
 })
 
-test('예약한 컴팩트도 headless 면 턴이 끝난 뒤 /compact 를 제출한다', async () => {
-  const { $, submitted, filled, toasts, timers } = headless()
+test('headless 가 아닌 오류면 /compact 를 제출하지 않고 그대로 던진다', async () => {
+  const { $, submitted } = headless({ error: 'nope' })
+  expect(await rejection(runCompact($))).toBe('nope')
+  expect(submitted).toEqual([])
+})
+
+test('제출이 drop 되면 사유로 실패하고, 사유가 비어도 실패로 본다', async () => {
+  expect(await rejection(runCompact(headless({ submitResult: { drop: '거절' } }).$))).toBe('거절')
+  expect(await rejection(runCompact(headless({ submitResult: { drop: '' } }).$))).toBe('/compact 제출이 거절됐어요')
+})
+
+test('예약한 컴팩트는 타이머로 미룬 뒤에야 /compact 를 제출한다', async () => {
+  const { $, submitted, filled, toasts, timers, runTimers } = headless()
   runAfterTurn($, 'compact')
-  await Promise.all(timers)
+  expect(timers.length).toBe(1)
+  expect(submitted).toEqual([])
+  await runTimers()
   expect(submitted).toEqual([{ text: '/compact', asUser: true }])
   expect(filled).toEqual([])
   expect(toasts.join(' ')).not.toContain('Enter')
+})
+
+test('예약한 컴팩트 제출이 drop 되면 입력창에 넣고 안내한다', async () => {
+  const { $, filled, toasts, runTimers } = headless({ submitResult: { drop: '거절' } })
+  runAfterTurn($, 'compact')
+  await runTimers()
+  expect(filled).toEqual(['/compact'])
+  expect(toasts.join(' ')).toContain('거절')
 })
 
 test('입력창이 없으면 Enter 대신 직접 입력하라고 알린다', async ($, on) => {
