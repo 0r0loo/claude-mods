@@ -112,17 +112,36 @@ async function refresh($: EngineInterface) {
   }
 }
 
+// headless(-p / SDK) 세션은 컴팩트를 턴 안에서만 돌리므로 command.run 이 거절되면 /compact 를 턴으로 제출한다
+// ponytail: 엔진 오류 문구로 판별, 문구가 바뀌면 session.start 의 isInteractive 로 옮긴다
+export async function runCompact($: EngineInterface) {
+  try {
+    await $.command.run({ command: 'compact' })
+  } catch (err) {
+    if (!(err instanceof Error && err.message.includes('not available in a headless'))) throw err
+    const { drop } = await $.prompt.submit({ text: '/compact', asUser: true })
+    if (drop) throw new Error(drop)
+  }
+}
+
+// 입력창에 명령을 넣어 두고, 실제로 넣었을 때만 Enter 를 안내한다(headless 에는 입력창이 없다)
+async function fillAndTell($: EngineInterface, command: 'compact' | 'clear', lead: string, reason: string) {
+  const { isFilled } = await $.prompt.fill({ text: `/${command}` }).catch(() => ({ isFilled: false }))
+  $.ui.toast(isFilled
+    ? `${lead} (${reason}). 입력창에 /${command}를 넣었으니 Enter로 실행하세요`
+    : `${lead} (${reason}). /${command}를 직접 입력해 실행하세요`)
+}
+
 // 지금 /compact 를 친 것처럼 실행한다. command.run 은 세션이 한가해질 때까지 기다렸다 실행하므로
 // 응답 중 여부를 따로 판단하지 않는다. 실패하면 실제 이유를 보여주고 입력창에 넣어 둔다.
 async function compactNow($: EngineInterface) {
   if (await read($, busy)) return
   await update($, busy, () => true)
   try {
-    await $.command.run({ command: 'compact' })
+    await runCompact($)
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    $.prompt.fill({ text: '/compact' }).catch(() => {})
-    $.ui.toast(`컴팩트하지 못했어요 (${reason}). 입력창에 /compact를 넣었으니 Enter로 실행하세요`)
+    await fillAndTell($, 'compact', '컴팩트하지 못했어요', reason)
   } finally {
     await update($, busy, () => false)
     await refresh($)
@@ -131,14 +150,13 @@ async function compactNow($: EngineInterface) {
 
 // 예약된 /compact·/clear 를 실행한다. turn.complete 훅 안에서는 턴이 그 훅을 기다리고 있어
 // 컴팩트도 명령도 거절되므로, 시계로 훅 밖으로 빼낸 뒤 command.run 에 맡긴다(세션이 한가해지면 실행된다).
-function runAfterTurn($: EngineInterface, command: 'compact' | 'clear') {
+export function runAfterTurn($: EngineInterface, command: 'compact' | 'clear') {
   $.clock.after(1, async () => {
     try {
-      await $.command.run({ command })
+      await (command === 'compact' ? runCompact($) : $.command.run({ command }))
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
-      $.prompt.fill({ text: `/${command}` }).catch(() => {})
-      $.ui.toast(`예약한 /${command}를 실행하지 못했어요 (${reason}). 입력창에 넣었으니 Enter로 실행하세요`)
+      await fillAndTell($, command, `예약한 /${command}를 실행하지 못했어요`, reason)
     }
   })
 }
@@ -150,8 +168,7 @@ async function clearNow($: EngineInterface) {
     await $.command.run({ command: 'clear' })
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    $.prompt.fill({ text: '/clear' }).catch(() => {})
-    $.ui.toast(`클리어하지 못했어요 (${reason}). 입력창에 /clear를 넣었으니 Enter로 실행하세요`)
+    await fillAndTell($, 'clear', '클리어하지 못했어요', reason)
   }
 }
 

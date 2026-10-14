@@ -1,5 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { On, RenderPropsOf } from 'claude-code'
+import type { EngineInterface, On, RenderPropsOf } from 'claude-code'
+
+import { runAfterTurn, runCompact } from '../hooks/register'
 
 const props = (isWorking: boolean) =>
   ({ hasSurvey: false, isWorking, maxRows: 10, bodyColumns: 120 }) as RenderPropsOf['AbovePrompt']
@@ -76,6 +78,60 @@ test('예약한 명령이 거절되면 입력창에 넣고 알린다', async ($,
   await clock.advance(10)
   expect(filled).toEqual(['/compact'])
   expect(toasts.join(' ')).toContain('Enter')
+  await ui.unmount()
+})
+
+const HEADLESS = '$.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on'
+
+// 테스트 엔진은 hook 이 던진 오류를 건너뛰고 'no implementation' 으로만 거절하므로, headless 거절은 가짜 $ 로 흉내 낸다
+const headless = () => {
+  const submitted: { text: string; asUser?: boolean }[] = []
+  const filled: string[] = []
+  const toasts: string[] = []
+  const timers: Promise<unknown>[] = []
+  const $ = {
+    command: { run: async () => { throw new Error(HEADLESS) } },
+    prompt: {
+      submit: async (args: { text: string; asUser?: boolean }) => {
+        submitted.push(args)
+        return { text: args.text }
+      },
+      fill: async (args: { text: string }) => {
+        filled.push(args.text)
+        return { isFilled: true }
+      },
+    },
+    ui: { toast: (text: string) => toasts.push(text) },
+    clock: { after: (_ms: number, fn: () => Promise<unknown>) => timers.push(fn()) },
+  } as unknown as EngineInterface
+  return { $, submitted, filled, toasts, timers }
+}
+
+test('한가할 때 headless 라 거절되면 /compact 를 턴으로 제출한다', async () => {
+  const { $, submitted } = headless()
+  await runCompact($)
+  expect(submitted).toEqual([{ text: '/compact', asUser: true }])
+})
+
+test('예약한 컴팩트도 headless 면 턴이 끝난 뒤 /compact 를 제출한다', async () => {
+  const { $, submitted, filled, toasts, timers } = headless()
+  runAfterTurn($, 'compact')
+  await Promise.all(timers)
+  expect(submitted).toEqual([{ text: '/compact', asUser: true }])
+  expect(filled).toEqual([])
+  expect(toasts.join(' ')).not.toContain('Enter')
+})
+
+test('입력창이 없으면 Enter 대신 직접 입력하라고 알린다', async ($, on) => {
+  const toasts = engine(on)
+  on('command.run', () => {
+    throw new Error('nope')
+  })
+  on('prompt.fill', () => ({ isFilled: false }))
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  await ui.press({ key: 'compact' })
+  expect(toasts.join(' ')).not.toContain('Enter')
+  expect(toasts.join(' ')).toContain('직접 입력')
   await ui.unmount()
 })
 
