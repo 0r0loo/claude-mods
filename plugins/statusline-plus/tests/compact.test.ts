@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { EngineInterface, On, RenderPropsOf } from 'claude-code'
 
-import { runAfterTurn, runCompact } from '../hooks/register'
+import { compactNow, runAfterTurn, runCompact, settleQueuedCompact } from '../hooks/register'
 
 const props = (isWorking: boolean) =>
   ({ hasSurvey: false, isWorking, maxRows: 10, bodyColumns: 120 }) as RenderPropsOf['AbovePrompt']
@@ -90,7 +90,24 @@ const headless = ({ error = HEADLESS, submitResult = {} as { drop?: string } } =
   const filled: string[] = []
   const toasts: string[] = []
   const timers: (() => Promise<unknown>)[] = []
+  // 테스트 엔진의 $ 에는 state 가 없어 atom 이 쓰는 get/set(ifVersion) 만 흉내 낸다
+  const store = new Map<string, { value: unknown; version: number }>()
   const $ = {
+    state: {
+      get: async (ref: { key: string }) => store.get(ref.key) ?? { value: undefined, version: 0 },
+      set: async (ref: { key: string }, value: unknown, opts?: { ifVersion?: number }) => {
+        const version = store.get(ref.key)?.version ?? 0
+        if (opts?.ifVersion !== undefined && opts.ifVersion !== version) return { isSet: false }
+        store.set(ref.key, { value, version: version + 1 })
+        return { isSet: true }
+      },
+    },
+    session: {
+      usage: async () => ({ startedAt: Date.now(), context: { window: 200000, percent: 10 }, rateLimits: [] }),
+      root: async () => '/tmp/proj',
+      turns: async () => 3,
+    },
+    process: { run: async () => ({ exitCode: 1, stdout: '', stderr: '' }) },
     command: { run: async () => { throw new Error(error) } },
     prompt: {
       submit: async (args: { text: string; asUser?: boolean }) => {
@@ -99,7 +116,8 @@ const headless = ({ error = HEADLESS, submitResult = {} as { drop?: string } } =
       },
       fill: async (args: { text: string }) => {
         filled.push(args.text)
-        return { isFilled: true }
+        // headless 에는 입력창이 없다
+        return { isFilled: false }
       },
     },
     ui: { toast: (text: string) => toasts.push(text) },
@@ -145,6 +163,27 @@ test('예약한 컴팩트 제출이 drop 되면 입력창에 넣고 안내한다
   await runTimers()
   expect(filled).toEqual(['/compact'])
   expect(toasts.join(' ')).toContain('거절')
+})
+
+test('headless 로 제출한 컴팩트는 그 턴이 끝날 때까지 다시 제출하지 않는다', async () => {
+  const { $, submitted } = headless()
+  await compactNow($)
+  await compactNow($)
+  expect(submitted).toHaveLength(1)
+
+  await settleQueuedCompact($)
+  await compactNow($)
+  expect(submitted).toHaveLength(2)
+})
+
+test('headless 제출이 drop 되면 busy 를 풀고 직접 입력하라고 알린다', async () => {
+  const { $, submitted, toasts } = headless({ submitResult: { drop: '거절' } })
+  await compactNow($)
+  expect(toasts.join(' ')).toContain('거절')
+  expect(toasts.join(' ')).toContain('직접 입력')
+
+  await compactNow($)
+  expect(submitted).toHaveLength(2)
 })
 
 test('입력창이 없으면 Enter 대신 직접 입력하라고 알린다', async ($, on) => {

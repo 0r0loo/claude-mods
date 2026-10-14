@@ -9,6 +9,7 @@ const compactions = atom({ plugin: 'statusline-plus', key: 'compactions' } as co
 const runningAgents = atom({ plugin: 'statusline-plus', key: 'runningAgents' } as const, 0)
 const clockNow = atom({ plugin: 'statusline-plus', key: 'now' } as const, 0)
 const busy = atom({ plugin: 'statusline-plus', key: 'busy' } as const, false)
+const queuedCompact = atom({ plugin: 'statusline-plus', key: 'queuedCompact' } as const, false)
 const pendingCompact = atom({ plugin: 'statusline-plus', key: 'pendingCompact' } as const, false)
 const expanded = atom({ plugin: 'statusline-plus', key: 'expanded' } as const, false)
 const clearStep = atom({ plugin: 'statusline-plus', key: 'clearStep' } as const, 'idle')
@@ -114,15 +115,32 @@ async function refresh($: EngineInterface) {
 
 // headless(-p / SDK) 세션은 컴팩트를 턴 안에서만 돌리므로 command.run 이 거절되면 /compact 를 턴으로 제출한다
 // ponytail: 엔진 오류 문구로 판별, 문구가 바뀌면 session.start 의 isInteractive 로 옮긴다
-export async function runCompact($: EngineInterface) {
+// 제출은 턴을 큐에 넣고 바로 끝나므로 busy 를 켜 두고 true 를 돌려준다. 그 턴이 끝나면 settleQueuedCompact 가 푼다.
+export async function runCompact($: EngineInterface): Promise<boolean> {
   try {
     await $.command.run({ command: 'compact' })
+    return false
   } catch (err) {
     if (!(err instanceof Error && err.message.includes('not available in a headless'))) throw err
-    const { drop } = await $.prompt.submit({ text: '/compact', asUser: true })
-    // drop 이 있으면 사유가 빈 문자열이어도 거절이다
-    if (drop !== undefined) throw new Error(drop || '/compact 제출이 거절됐어요')
+    await update($, busy, () => true)
+    await update($, queuedCompact, () => true)
+    try {
+      const { drop } = await $.prompt.submit({ text: '/compact', asUser: true })
+      // drop 이 있으면 사유가 빈 문자열이어도 거절이다
+      if (drop !== undefined) throw new Error(drop || '/compact 제출이 거절됐어요')
+    } catch (submitErr) {
+      await settleQueuedCompact($)
+      throw submitErr
+    }
+    return true
   }
+}
+
+// 제출해 둔 /compact 턴이 끝났으면 busy 를 푼다(컴팩트가 건너뛰어져도 turn.complete 에서 풀린다)
+export async function settleQueuedCompact($: EngineInterface) {
+  if (!(await read($, queuedCompact))) return
+  await update($, queuedCompact, () => false)
+  await update($, busy, () => false)
 }
 
 // 입력창에 명령을 넣어 두고, 실제로 넣었을 때만 Enter 를 안내한다(headless 에는 입력창이 없다)
@@ -135,18 +153,24 @@ async function fillAndTell($: EngineInterface, command: 'compact' | 'clear', lea
 
 // 지금 /compact 를 친 것처럼 실행한다. command.run 은 세션이 한가해질 때까지 기다렸다 실행하므로
 // 응답 중 여부를 따로 판단하지 않는다. 실패하면 실제 이유를 보여주고 입력창에 넣어 둔다.
-async function compactNow($: EngineInterface) {
+export async function compactNow($: EngineInterface) {
   if (await read($, busy)) return
   await update($, busy, () => true)
+  let isQueued = false
+  let failure: string | null = null
   try {
-    await runCompact($)
+    isQueued = await runCompact($)
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err)
-    await fillAndTell($, 'compact', '컴팩트하지 못했어요', reason)
+    failure = err instanceof Error ? err.message : String(err)
   } finally {
-    await update($, busy, () => false)
-    await refresh($)
+    // 턴으로 제출했으면 아직 컴팩트 전이라 busy 를 유지하고, 갱신은 그 턴의 turn.complete·session.measure 에 맡긴다
+    if (!isQueued) {
+      await update($, busy, () => false)
+      await refresh($)
+    }
   }
+  // 입력창 채우기가 늦어도 버튼이 잠기지 않도록 busy 를 푼 뒤에 안내한다
+  if (failure !== null) await fillAndTell($, 'compact', '컴팩트하지 못했어요', failure)
 }
 
 // 예약된 /compact·/clear 를 실행한다. turn.complete 훅 안에서는 턴이 그 훅을 기다리고 있어
@@ -200,6 +224,7 @@ export const register: Register = on => {
         endedAt: Date.now(),
       }
       await update($, lastTurn, () => turn)
+      await settleQueuedCompact($)
       await refresh($)
       // 클리어가 예약돼 있으면 컴팩트는 의미가 없으니 클리어만 한다
       if ((await read($, clearStep)) === 'pending') {
@@ -220,6 +245,7 @@ export const register: Register = on => {
     if (!('skip' in result && result.skip)) {
       await update($, compactions, n => n + 1)
     }
+    await settleQueuedCompact($)
     return result
   })
 
