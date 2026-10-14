@@ -30,6 +30,7 @@ declare module 'claude-code' {
       runningAgents: number
       now: number
       busy: boolean
+      queuedCompact: boolean
       pendingCompact: boolean
       clearStep: ClearStep
       expanded: boolean
