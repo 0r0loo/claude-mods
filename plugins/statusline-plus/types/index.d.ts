@@ -10,6 +10,8 @@ export type Snapshot = {
   contextPercent: number | null
   fiveHour: Window | null
   weekly: Window | null
+  // 한도 정보를 받았는지. 받았는데 창이 없으면 그 요금제엔 그 창이 없다(울트라는 5시간 창이 없다)
+  hasRateLimits: boolean
 }
 
 export type ClearStep = 'idle' | 'confirm' | 'pending'

@@ -28,6 +28,7 @@ const EMPTY: Snapshot = {
   contextPercent: 0,
   fiveHour: null,
   weekly: null,
+  hasRateLimits: false,
 }
 
 export function meter(percent: number, width = 10): string {
@@ -97,6 +98,7 @@ async function refresh($: EngineInterface) {
     contextPercent: usage.context.percent ?? null,
     fiveHour: pick('five_hour'),
     weekly: pick('seven_day'),
+    hasRateLimits: usage.rateLimits.length > 0,
   }
   await update($, snapshot, () => next)
   await update($, clockNow, () => Date.now())
@@ -352,8 +354,8 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Box flexDirection="row" flexWrap="wrap" columnGap={3}>
           {Gauge('ctx', 'ctx', s.contextPercent)}
-          {Gauge('5h', '5h', s.fiveHour?.used ?? null, s.fiveHour?.resetsAt)}
-          {Gauge('1w', '1w', s.weekly?.used ?? null, s.weekly?.resetsAt)}
+          {s.fiveHour || !s.hasRateLimits ? Gauge('5h', '5h', s.fiveHour?.used ?? null, s.fiveHour?.resetsAt) : null}
+          {s.weekly || !s.hasRateLimits ? Gauge('1w', '1w', s.weekly?.used ?? null, s.weekly?.resetsAt) : null}
         </Box>
         {isOpen ? (
           <Box key="details" flexDirection="column" marginTop={1}>
