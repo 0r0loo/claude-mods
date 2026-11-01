@@ -291,15 +291,13 @@ export const register: Register = on => {
       )
     }
 
-    const where = [
-      s.folder ? <Text key="folder" bold wrap="truncate-middle">{s.folder}</Text> : null,
-      s.branch ? (
-        <Box key="branch" flexDirection="row" flexShrink={1}>
-          <Text color="suggestion" wrap="truncate-middle">{`⎇ ${s.branch}`}</Text>
-          {s.isDirty ? <Text color="warning">{' ●'}</Text> : null}
-        </Box>
-      ) : null,
-    ].filter(Boolean)
+    // 브랜치는 접혀 있어도 보이게 게이지 줄에 둔다
+    const branch = s.branch ? (
+      <Box key="branch" flexDirection="row" flexShrink={1}>
+        <Text color="suggestion" wrap="truncate-middle">{`⎇ ${s.branch}`}</Text>
+        {s.isDirty ? <Text color="warning">{' ●'}</Text> : null}
+      </Box>
+    ) : null
 
     const stat = (key: string, label: string, value: string, color?: string) => (
       <Box key={key} flexDirection="row" gap={1} flexShrink={0}>
@@ -356,14 +354,11 @@ export const register: Register = on => {
           {Gauge('ctx', 'ctx', s.contextPercent)}
           {s.fiveHour || !s.hasRateLimits ? Gauge('5h', '5h', s.fiveHour?.used ?? null, s.fiveHour?.resetsAt) : null}
           {s.weekly || !s.hasRateLimits ? Gauge('1w', '1w', s.weekly?.used ?? null, s.weekly?.resetsAt) : null}
+          {branch}
         </Box>
         {isOpen ? (
           <Box key="details" flexDirection="column" marginTop={1}>
-            {where.length > 0 ? (
-              <Box flexDirection="row" columnGap={2}>
-                {where}
-              </Box>
-            ) : null}
+            {s.folder ? <Text key="folder" bold wrap="truncate-middle">{s.folder}</Text> : null}
             <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
               {stats}
             </Box>
