@@ -15,6 +15,7 @@ const engine = (on: On, rateLimits: unknown[] = [], git = { exitCode: 1, stdout:
   })
   on('session.usage', () => ({ value: { startedAt: Date.now(), context: { window: 200000, percent: 10 }, rateLimits } }) as never)
   on('session.root', () => ({ value: '/tmp/proj' }) as never)
+  on('session.model', () => ({ value: 'claude-opus-5-5[1m]' }) as never)
   on('session.turns', () => ({ value: 3 }) as never)
   on('process.run', () => ({ value: { ...git, stderr: '' } }) as never)
   on('agent.list', () => ({ value: [] }) as never)
@@ -104,6 +105,7 @@ const headless = ({ error = HEADLESS, submitResult = {} as { drop?: string } } =
     },
     session: {
       usage: async () => ({ startedAt: Date.now(), context: { window: 200000, percent: 10 }, rateLimits: [] }),
+      model: async () => 'claude-opus-5-5',
       root: async () => '/tmp/proj',
       turns: async () => 3,
     },
@@ -256,6 +258,23 @@ test('상세를 접어 둬도 게이지 줄에 브랜치와 미커밋 표시를 
   const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
   expect(texts).toContain('⎇ feat/x')
   expect(texts).toContain('●')
+  await ui.unmount()
+})
+
+test('게이지 줄에 현재 모델과 직전 요청의 노력도를 띄운다', async ($, on) => {
+  engine(on)
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' } as never
+  })
+  await $.turn.complete({ ...TURN })
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  const before = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
+  expect(before).toContain('opus-5-5')
+  expect(before).not.toContain('xhigh')
+  // 스트림은 끝까지 읽어야 훅이 돈다
+  for await (const _ of $.turn.step({ turnId: 't2', index: 0, model: 'claude-opus-5-5', effort: 'xhigh', messageCount: 1 })) void _
+  const after = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
+  expect(after).toContain('· xhigh')
   await ui.unmount()
 })
 

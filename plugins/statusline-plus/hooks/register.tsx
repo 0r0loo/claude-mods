@@ -13,6 +13,7 @@ const queuedCompact = atom({ plugin: 'statusline-plus', key: 'queuedCompact' } a
 const pendingCompact = atom({ plugin: 'statusline-plus', key: 'pendingCompact' } as const, false)
 const expanded = atom({ plugin: 'statusline-plus', key: 'expanded' } as const, false)
 const clearStep = atom({ plugin: 'statusline-plus', key: 'clearStep' } as const, 'idle')
+const effort = atom({ plugin: 'statusline-plus', key: 'effort' } as const, null)
 
 const WARN_AT = [80, 95]
 const CACHE_TTL_MS = 5 * 60 * 1000
@@ -29,6 +30,7 @@ const EMPTY: Snapshot = {
   fiveHour: null,
   weekly: null,
   hasRateLimits: false,
+  model: null,
 }
 
 export function meter(percent: number, width = 10): string {
@@ -83,6 +85,7 @@ async function readBranch($: EngineInterface, root: string): Promise<{ branch: s
 async function refresh($: EngineInterface) {
   const usage = await $.session.usage()
   const root = await $.session.root()
+  const model = await $.session.model().catch(() => null)
   const pick = (kind: string): Window | null => {
     const w = usage.rateLimits.find(r => r.kind === kind)
     return w ? { used: w.percentUsed, resetsAt: w.resetsAt } : null
@@ -99,6 +102,7 @@ async function refresh($: EngineInterface) {
     fiveHour: pick('five_hour'),
     weekly: pick('seven_day'),
     hasRateLimits: usage.rateLimits.length > 0,
+    model: model ? shortModel(model) : null,
   }
   await update($, snapshot, () => next)
   await update($, clockNow, () => Date.now())
@@ -242,6 +246,16 @@ export const register: Register = on => {
     return result
   })
 
+  // 노력도는 세션에서 읽을 길이 없어 메인 루프가 모델 요청을 보낼 때 실린 값을 받아 둔다
+  // turn.step 은 스트리밍 이벤트라 async generator 로 받아 그대로 흘려보낸다
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined) {
+      const level = e.effort === undefined ? null : String(e.effort)
+      if ((await read($, effort)) !== level) await update($, effort, () => level)
+    }
+    return yield* next(e)
+  })
+
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
     if (!('skip' in result && result.skip)) {
@@ -269,6 +283,7 @@ export const register: Register = on => {
     const isPending = await read($, pendingCompact)
     const clear = await read($, clearStep)
     const isOpen = await read($, expanded)
+    const level = await read($, effort)
     const { Box, Button, Text } = $.ui.resolve(e)
 
     const barWidth = e.props.bodyColumns >= 70 ? 8 : 5
@@ -290,6 +305,13 @@ export const register: Register = on => {
         </Box>
       )
     }
+
+    const modelLine = s.model ? (
+      <Box key="model" flexDirection="row" flexShrink={0}>
+        <Text color="claude">{s.model}</Text>
+        {level ? <Text dimColor>{` · ${level}`}</Text> : null}
+      </Box>
+    ) : null
 
     // 브랜치는 접혀 있어도 보이게 게이지 줄에 둔다
     const branch = s.branch ? (
@@ -354,6 +376,7 @@ export const register: Register = on => {
           {Gauge('ctx', 'ctx', s.contextPercent)}
           {s.fiveHour || !s.hasRateLimits ? Gauge('5h', '5h', s.fiveHour?.used ?? null, s.fiveHour?.resetsAt) : null}
           {s.weekly || !s.hasRateLimits ? Gauge('1w', '1w', s.weekly?.used ?? null, s.weekly?.resetsAt) : null}
+          {modelLine}
           {branch}
         </Box>
         {isOpen ? (
