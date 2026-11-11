@@ -6,7 +6,7 @@ import { compactNow, runAfterTurn, runCompact, settleQueuedCompact } from '../ho
 const props = (isWorking: boolean) =>
   ({ hasSurvey: false, isWorking, maxRows: 10, bodyColumns: 120 }) as RenderPropsOf['AbovePrompt']
 
-const engine = (on: On, rateLimits: unknown[] = []) => {
+const engine = (on: On, rateLimits: unknown[] = [], git = { exitCode: 1, stdout: '' }) => {
   const toasts: string[] = []
   on('turn.complete', () => ({ text: '' }))
   on('ui.toast', (_$, e) => {
@@ -15,8 +15,9 @@ const engine = (on: On, rateLimits: unknown[] = []) => {
   })
   on('session.usage', () => ({ value: { startedAt: Date.now(), context: { window: 200000, percent: 10 }, rateLimits } }) as never)
   on('session.root', () => ({ value: '/tmp/proj' }) as never)
+  on('session.model', () => ({ value: 'claude-opus-5-5[1m]' }) as never)
   on('session.turns', () => ({ value: 3 }) as never)
-  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }) as never)
+  on('process.run', () => ({ value: { ...git, stderr: '' } }) as never)
   on('agent.list', () => ({ value: [] }) as never)
   return toasts
 }
@@ -104,6 +105,7 @@ const headless = ({ error = HEADLESS, submitResult = {} as { drop?: string } } =
     },
     session: {
       usage: async () => ({ startedAt: Date.now(), context: { window: 200000, percent: 10 }, rateLimits: [] }),
+      model: async () => 'claude-opus-5-5',
       root: async () => '/tmp/proj',
       turns: async () => 3,
     },
@@ -244,6 +246,59 @@ test('5시간 창이 없는 요금제(울트라)에서는 5h 게이지를 숨기
   expect(texts).not.toContain('5h')
   expect(texts).toContain('1w')
   expect(texts).toContain('42%')
+  await ui.unmount()
+})
+
+test('상세를 접어 둬도 게이지 줄에 브랜치와 미커밋 표시를 띄운다', async ($, on) => {
+  // git rev-parse·status 둘 다 같은 출력을 받으므로 status 가 비어 있지 않아 ● 가 붙는다
+  engine(on, [], { exitCode: 0, stdout: 'feat/x\n' })
+  await $.turn.complete({ ...TURN })
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  expect(await ui.find({ key: 'details' })).toBeFalsy()
+  const texts = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
+  expect(texts).toContain('⎇ feat/x')
+  expect(texts).toContain('●')
+  await ui.unmount()
+})
+
+test('게이지 줄에 현재 모델과 직전 요청의 노력도를 띄운다', async ($, on) => {
+  engine(on)
+  on('turn.step', async function* (_$, e) {
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' } as never
+  })
+  await $.turn.complete({ ...TURN })
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  const before = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
+  expect(before).toContain('opus-5-5')
+  expect(before).not.toContain('xhigh')
+  // 스트림은 끝까지 읽어야 훅이 돈다
+  for await (const _ of $.turn.step({ turnId: 't2', index: 0, model: 'claude-opus-5-5', effort: 'xhigh', messageCount: 1 })) void _
+  const after = (await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')
+  expect(after).toContain('· xhigh')
+  await ui.unmount()
+})
+
+test('턴이 없어도 주기 갱신으로 바뀐 브랜치를 따라간다', async ($, on) => {
+  const git = { exitCode: 0, stdout: 'main\n' }
+  engine(on, [], git)
+  on('session.start', () => ({ cwd: '/tmp/proj' }))
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '/tmp/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')).toContain('⎇ main')
+  git.stdout = 'feat/live\n'
+  await clock.advance(10_000)
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')).toContain('⎇ feat/live')
+  await ui.unmount()
+})
+
+test('/effort 로 노력도를 바꾸면 다음 요청 전에도 띄운다', async ($, on) => {
+  engine(on)
+  recordClears(on)
+  await $.turn.complete({ ...TURN })
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  await $.command.run({ command: 'effort', args: 'high' })
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')).toContain('· high')
   await ui.unmount()
 })
 

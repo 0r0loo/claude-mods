@@ -12,6 +12,7 @@ export type Snapshot = {
   weekly: Window | null
   // 한도 정보를 받았는지. 받았는데 창이 없으면 그 요금제엔 그 창이 없다(울트라는 5시간 창이 없다)
   hasRateLimits: boolean
+  model: string | null
 }
 
 export type ClearStep = 'idle' | 'confirm' | 'pending'
@@ -36,6 +37,8 @@ declare module 'claude-code' {
       pendingCompact: boolean
       clearStep: ClearStep
       expanded: boolean
+      // 직전 모델 요청의 노력도. turn.step 에만 실려 오므로 첫 요청 전에는 없다
+      effort: string | null
     }
   }
 }

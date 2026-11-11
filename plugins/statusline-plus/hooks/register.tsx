@@ -13,9 +13,13 @@ const queuedCompact = atom({ plugin: 'statusline-plus', key: 'queuedCompact' } a
 const pendingCompact = atom({ plugin: 'statusline-plus', key: 'pendingCompact' } as const, false)
 const expanded = atom({ plugin: 'statusline-plus', key: 'expanded' } as const, false)
 const clearStep = atom({ plugin: 'statusline-plus', key: 'clearStep' } as const, 'idle')
+const effort = atom({ plugin: 'statusline-plus', key: 'effort' } as const, null)
 
 const WARN_AT = [80, 95]
 const CACHE_TTL_MS = 5 * 60 * 1000
+// 턴 사이에도 브랜치·모델·한도가 따라오도록 이 주기로 다시 읽는다(git 명령 두 번이라 가볍다)
+const REFRESH_MS = 10_000
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const warned = new Set<string>()
 
 const EMPTY: Snapshot = {
@@ -29,6 +33,7 @@ const EMPTY: Snapshot = {
   fiveHour: null,
   weekly: null,
   hasRateLimits: false,
+  model: null,
 }
 
 export function meter(percent: number, width = 10): string {
@@ -83,6 +88,7 @@ async function readBranch($: EngineInterface, root: string): Promise<{ branch: s
 async function refresh($: EngineInterface) {
   const usage = await $.session.usage()
   const root = await $.session.root()
+  const model = await $.session.model().catch(() => null)
   const pick = (kind: string): Window | null => {
     const w = usage.rateLimits.find(r => r.kind === kind)
     return w ? { used: w.percentUsed, resetsAt: w.resetsAt } : null
@@ -99,6 +105,7 @@ async function refresh($: EngineInterface) {
     fiveHour: pick('five_hour'),
     weekly: pick('seven_day'),
     hasRateLimits: usage.rateLimits.length > 0,
+    model: model ? shortModel(model) : null,
   }
   await update($, snapshot, () => next)
   await update($, clockNow, () => Date.now())
@@ -209,8 +216,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     await refresh($)
-    $.clock.every(30_000, async () => {
-      await update($, clockNow, () => Date.now())
+    $.clock.every(REFRESH_MS, async () => {
+      await refresh($)
       await countAgents($)
     })
     return result
@@ -242,6 +249,27 @@ export const register: Register = on => {
     return result
   })
 
+  // 노력도는 세션에서 읽을 길이 없어 메인 루프가 모델 요청을 보낼 때 실린 값을 받아 둔다
+  // turn.step 은 스트리밍 이벤트라 async generator 로 받아 그대로 흘려보낸다
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined) {
+      const level = e.effort === undefined ? null : String(e.effort)
+      if ((await read($, effort)) !== level) await update($, effort, () => level)
+    }
+    return yield* next(e)
+  })
+
+  // /model·/effort·/config 는 끝나는 대로 다시 읽는다. 고르는 창을 띄우는 명령은 고르기 전에 끝나므로 나머지는 주기 갱신이 따라잡는다
+  on('command.run', async ($, e, next) => {
+    const result = await next(e)
+    if (e.command === 'effort') {
+      const level = e.args.trim().toLowerCase()
+      if (EFFORTS.includes(level)) await update($, effort, () => level)
+    }
+    if (e.command === 'model' || e.command === 'effort' || e.command === 'config') await refresh($)
+    return result
+  })
+
   on('session.compact', async ($, e, next) => {
     const result = await next(e)
     if (!('skip' in result && result.skip)) {
@@ -269,6 +297,7 @@ export const register: Register = on => {
     const isPending = await read($, pendingCompact)
     const clear = await read($, clearStep)
     const isOpen = await read($, expanded)
+    const level = await read($, effort)
     const { Box, Button, Text } = $.ui.resolve(e)
 
     const barWidth = e.props.bodyColumns >= 70 ? 8 : 5
@@ -291,15 +320,20 @@ export const register: Register = on => {
       )
     }
 
-    const where = [
-      s.folder ? <Text key="folder" bold wrap="truncate-middle">{s.folder}</Text> : null,
-      s.branch ? (
-        <Box key="branch" flexDirection="row" flexShrink={1}>
-          <Text color="suggestion" wrap="truncate-middle">{`⎇ ${s.branch}`}</Text>
-          {s.isDirty ? <Text color="warning">{' ●'}</Text> : null}
-        </Box>
-      ) : null,
-    ].filter(Boolean)
+    const modelLine = s.model ? (
+      <Box key="model" flexDirection="row" flexShrink={0}>
+        <Text color="claude">{s.model}</Text>
+        {level ? <Text dimColor>{` · ${level}`}</Text> : null}
+      </Box>
+    ) : null
+
+    // 브랜치는 접혀 있어도 보이게 게이지 줄에 둔다
+    const branch = s.branch ? (
+      <Box key="branch" flexDirection="row" flexShrink={1}>
+        <Text color="suggestion" wrap="truncate-middle">{`⎇ ${s.branch}`}</Text>
+        {s.isDirty ? <Text color="warning">{' ●'}</Text> : null}
+      </Box>
+    ) : null
 
     const stat = (key: string, label: string, value: string, color?: string) => (
       <Box key={key} flexDirection="row" gap={1} flexShrink={0}>
@@ -356,14 +390,12 @@ export const register: Register = on => {
           {Gauge('ctx', 'ctx', s.contextPercent)}
           {s.fiveHour || !s.hasRateLimits ? Gauge('5h', '5h', s.fiveHour?.used ?? null, s.fiveHour?.resetsAt) : null}
           {s.weekly || !s.hasRateLimits ? Gauge('1w', '1w', s.weekly?.used ?? null, s.weekly?.resetsAt) : null}
+          {modelLine}
+          {branch}
         </Box>
         {isOpen ? (
           <Box key="details" flexDirection="column" marginTop={1}>
-            {where.length > 0 ? (
-              <Box flexDirection="row" columnGap={2}>
-                {where}
-              </Box>
-            ) : null}
+            {s.folder ? <Text key="folder" bold wrap="truncate-middle">{s.folder}</Text> : null}
             <Box flexDirection="row" flexWrap="wrap" columnGap={2}>
               {stats}
             </Box>
