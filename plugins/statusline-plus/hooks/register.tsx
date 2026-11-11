@@ -17,6 +17,9 @@ const effort = atom({ plugin: 'statusline-plus', key: 'effort' } as const, null)
 
 const WARN_AT = [80, 95]
 const CACHE_TTL_MS = 5 * 60 * 1000
+// 턴 사이에도 브랜치·모델·한도가 따라오도록 이 주기로 다시 읽는다(git 명령 두 번이라 가볍다)
+const REFRESH_MS = 10_000
+const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const warned = new Set<string>()
 
 const EMPTY: Snapshot = {
@@ -213,8 +216,8 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     await refresh($)
-    $.clock.every(30_000, async () => {
-      await update($, clockNow, () => Date.now())
+    $.clock.every(REFRESH_MS, async () => {
+      await refresh($)
       await countAgents($)
     })
     return result
@@ -254,6 +257,17 @@ export const register: Register = on => {
       if ((await read($, effort)) !== level) await update($, effort, () => level)
     }
     return yield* next(e)
+  })
+
+  // /model·/effort·/config 는 끝나는 대로 다시 읽는다. 고르는 창을 띄우는 명령은 고르기 전에 끝나므로 나머지는 주기 갱신이 따라잡는다
+  on('command.run', async ($, e, next) => {
+    const result = await next(e)
+    if (e.command === 'effort') {
+      const level = e.args.trim().toLowerCase()
+      if (EFFORTS.includes(level)) await update($, effort, () => level)
+    }
+    if (e.command === 'model' || e.command === 'effort' || e.command === 'config') await refresh($)
+    return result
   })
 
   on('session.compact', async ($, e, next) => {

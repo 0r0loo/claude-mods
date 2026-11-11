@@ -278,6 +278,30 @@ test('게이지 줄에 현재 모델과 직전 요청의 노력도를 띄운다'
   await ui.unmount()
 })
 
+test('턴이 없어도 주기 갱신으로 바뀐 브랜치를 따라간다', async ($, on) => {
+  const git = { exitCode: 0, stdout: 'main\n' }
+  engine(on, [], git)
+  on('session.start', () => ({ cwd: '/tmp/proj' }))
+  const clock = mock.clock(on)
+  await $.session.start({ cwd: '/tmp/proj', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')).toContain('⎇ main')
+  git.stdout = 'feat/live\n'
+  await clock.advance(10_000)
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')).toContain('⎇ feat/live')
+  await ui.unmount()
+})
+
+test('/effort 로 노력도를 바꾸면 다음 요청 전에도 띄운다', async ($, on) => {
+  engine(on)
+  recordClears(on)
+  await $.turn.complete({ ...TURN })
+  const ui = await $.ui.mount({ plugin: 'statusline-plus', surface: 'terminal', component: 'AbovePrompt', props: props(false) })
+  await $.command.run({ command: 'effort', args: 'high' })
+  expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join(' | ')).toContain('· high')
+  await ui.unmount()
+})
+
 test('클리어는 두 번 눌러야 실행된다', async ($, on) => {
   engine(on)
   const ran = recordClears(on)
